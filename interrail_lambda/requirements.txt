@@ -1,0 +1,7 @@
+fastapi~=0.139.2
+requests~=2.34.2
+mangum~=0.21.0  # ASGI adapter for AWS Lambda (main.handler)
+
+# Test-only
+httpx~=0.28.1
+pytest~=9.1.1
