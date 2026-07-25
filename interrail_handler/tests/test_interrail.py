@@ -88,12 +88,12 @@ PLAN_ITINERARIES = [
 # One block per distinct destination, in trip order: Dublin, Därligen, Munich,
 # Prague, Berlin. Open-Meteo returns a JSON *array* for a multi-location request
 # and each block is column-per-variable (dates parallel to the value lists).
-def _weather_block(*, lat, lon, tz, temp, code, wind):
+def _weather_block(*, lat, lon, tz, temp, code, wind, is_day=1):
     return {
         "latitude": lat, "longitude": lon, "timezone": tz,
         "current": {
             "time": "2026-07-25T14:00", "temperature_2m": temp,
-            "weather_code": code, "wind_speed_10m": wind,
+            "weather_code": code, "wind_speed_10m": wind, "is_day": is_day,
         },
         "daily": {
             "time": ["2026-07-25", "2026-07-26", "2026-07-27"],
@@ -110,7 +110,7 @@ WEATHER_FORECAST = [
     _weather_block(lat=46.66, lon=7.85, tz="Europe/Zurich", temp=21.0, code=1, wind=6.0),
     _weather_block(lat=48.14, lon=11.58, tz="Europe/Berlin", temp=24.4, code=2, wind=8.1),
     _weather_block(lat=50.08, lon=14.44, tz="Europe/Prague", temp=23.1, code=0, wind=9.3),
-    _weather_block(lat=52.52, lon=13.40, tz="Europe/Berlin", temp=25.0, code=95, wind=14.7),
+    _weather_block(lat=52.52, lon=13.40, tz="Europe/Berlin", temp=25.0, code=95, wind=14.7, is_day=0),
 ]
 
 
@@ -298,8 +298,29 @@ def test_manifest_destination_is_display_only(client):
     )
     assert munich == {
         "type": "destination", "flag": "🇩🇪", "name": "Munich", "country": "Germany",
-        "latitude": 48.1374, "longitude": 11.5755,
+        "latitude": 48.1374, "longitude": 11.5755, "timezone": "Europe/Berlin",
+        "depart": "2026-08-03",
     }
+
+
+def test_manifest_destination_depart_dates(client):
+    body = client.get("/manifest").json()
+    dests = [i for i in body if i["type"] == "destination"]
+
+    def named(name):
+        return [d for d in dests if d["name"] == name]
+
+    # Each destination's `depart` is the day we travel on from it — one per
+    # travel day, driving the UI separators.
+    assert named("Därligen")[0]["depart"] == "2026-08-01"
+    assert named("Munich")[0]["depart"] == "2026-08-03"
+    assert named("Prague")[0]["depart"] == "2026-08-05"
+    assert named("Berlin")[0]["depart"] == "2026-08-08"
+    # Dublin bookends the trip: we depart on the outbound day, but the final
+    # home stop has no onward travel, so its `depart` is omitted (not null).
+    dublins = named("Dublin")
+    assert dublins[0]["depart"] == "2026-07-29"
+    assert "depart" not in dublins[-1]
 
 
 def test_manifest_flight_is_static_with_details(client):
@@ -308,7 +329,6 @@ def test_manifest_flight_is_static_with_details(client):
     assert flight == {
         "type": "flight", "start": "Dublin", "end": "Genève-Aéroport",
         "number": "EI 0680", "operator": "Aer Lingus",
-        "departure_at": "2026-07-29T05:15:00Z",
     }
 
 
@@ -356,6 +376,10 @@ def test_weather_current_and_daily_passthrough(client, weather):
     assert dublin["current"]["temperature"] == 17.3
     assert dublin["current"]["weather_code"] == 3  # raw WMO code, not translated
     assert dublin["current"]["wind_speed"] == 12.5
+    # is_day (1/0 upstream) surfaces as a bool for day/night icon selection.
+    assert dublin["current"]["is_day"] is True
+    berlin = next(w for w in body if w["destination"] == "Berlin")
+    assert berlin["current"]["is_day"] is False
     # Three days of forecast, dates and codes passed straight through.
     assert len(dublin["daily"]) == 3
     assert dublin["daily"][0]["date"] == "2026-07-25"

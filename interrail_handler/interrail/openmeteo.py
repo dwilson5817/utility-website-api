@@ -28,7 +28,7 @@ class OpenMeteo:
     base_url = "https://api.open-meteo.com"
 
     #: Current-conditions variables requested (order is cosmetic).
-    CURRENT = ("temperature_2m", "weather_code", "wind_speed_10m")
+    CURRENT = ("temperature_2m", "weather_code", "wind_speed_10m", "is_day")
     #: Daily-forecast variables requested.
     DAILY = (
         "weather_code",
@@ -103,6 +103,7 @@ class OpenMeteo:
                 temperature=current.get("temperature_2m"),
                 weather_code=current.get("weather_code"),
                 wind_speed=current.get("wind_speed_10m"),
+                is_day=bool(current.get("is_day")),
             ),
             daily=self._daily(block.get("daily", {})),
         )

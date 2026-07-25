@@ -71,6 +71,9 @@ class CurrentWeather(BaseModel):
     weather_code: int
     #: Wind speed, km/h.
     wind_speed: float
+    #: Whether it's currently daytime at the destination (sun up), so the
+    #: frontend can pick a day- or night-variant weather icon.
+    is_day: bool
 
 
 class DailyForecast(BaseModel):

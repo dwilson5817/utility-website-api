@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -8,7 +8,8 @@ class DestinationItem(BaseModel):
     """A place stayed at on the trip.
 
     Mostly display, but carries fixed coordinates so ``/weather`` can fetch the
-    forecast for each destination without a geocoding round-trip.
+    forecast for each destination without a geocoding round-trip, and the IANA
+    ``timezone`` so the frontend can show each destination's local time.
     """
 
     type: Literal["destination"] = "destination"
@@ -17,14 +18,21 @@ class DestinationItem(BaseModel):
     country: str
     latitude: float
     longitude: float
+    #: IANA timezone name (e.g. ``"Europe/Berlin"``) for showing local time.
+    timezone: str
+    #: The day we travel on from here — one per travel day, driving the UI's
+    #: per-day separators. Optional: omitted for the final home stop (Dublin),
+    #: where the trip ends and there's no onward travel.
+    depart: date | None = None
 
 
 class FlightItem(BaseModel):
     """A flight between two places.
 
-    Flights are static: they aren't in the routing engine, aren't covered by the
-    Interrail pass, and have fixed times — so unlike ``route`` legs they can't be
-    computed. The ``end`` airport is where the following ``route`` leg begins.
+    Flights are static markers: they aren't in the routing engine and aren't
+    covered by the Interrail pass, so — unlike ``leg`` hops — they can't be shown
+    as a live departure board. The ``end`` airport is where the following ``leg``
+    begins.
     """
 
     type: Literal["flight"] = "flight"
@@ -32,7 +40,6 @@ class FlightItem(BaseModel):
     end: str
     number: str
     operator: str
-    departure_at: datetime
 
 
 class LegItem(BaseModel):
@@ -73,19 +80,20 @@ ManifestItem = Annotated[
 _MANIFEST: list[ManifestItem] = [
     DestinationItem(
         flag="🇮🇪", name="Dublin", country="Ireland",
-        latitude=53.3498, longitude=-6.2603,
+        latitude=53.3498, longitude=-6.2603, timezone="Europe/Dublin",
+        depart="2026-07-29",
     ),
     FlightItem(
         start="Dublin", end="Genève-Aéroport",
         number="EI 0680", operator="Aer Lingus",
-        departure_at="2026-07-29T05:15:00Z",
     ),
     LegItem(from_="Genève-Aéroport", to="Bern"),
     LegItem(from_="Bern", to="Spiez"),
     LegItem(mode="bus", from_="Spiez, Bahnhof", to="Därligen, Dorf"),
     DestinationItem(
         flag="🇨🇭", name="Därligen", country="Switzerland",
-        latitude=46.6635, longitude=7.8497,
+        latitude=46.6635, longitude=7.8497, timezone="Europe/Zurich",
+        depart="2026-08-01",
     ),
     LegItem(mode="bus", from_="Därligen, Dorf", to="Spiez, Bahnhof"),
     LegItem(from_="Spiez", to="Bern"),
@@ -93,26 +101,28 @@ _MANIFEST: list[ManifestItem] = [
     LegItem(from_="Zürich HB", to="München Hbf"),
     DestinationItem(
         flag="🇩🇪", name="Munich", country="Germany",
-        latitude=48.1374, longitude=11.5755,
+        latitude=48.1374, longitude=11.5755, timezone="Europe/Berlin",
+        depart="2026-08-03",
     ),
     LegItem(from_="München Hbf", to="Praha hlavní nádraží"),
     DestinationItem(
         flag="🇨🇿", name="Prague", country="Czech Republic",
-        latitude=50.0755, longitude=14.4378,
+        latitude=50.0755, longitude=14.4378, timezone="Europe/Prague",
+        depart="2026-08-05",
     ),
     LegItem(from_="Praha hlavní nádraží", to="Berlin Hbf"),
     DestinationItem(
         flag="🇩🇪", name="Berlin", country="Germany",
-        latitude=52.5200, longitude=13.4050,
+        latitude=52.5200, longitude=13.4050, timezone="Europe/Berlin",
+        depart="2026-08-08",
     ),
     FlightItem(
         start="Berlin", end="Dublin",
         number="EI 0337", operator="Aer Lingus",
-        departure_at="2026-08-08T20:45:00Z",
     ),
     DestinationItem(
         flag="🇮🇪", name="Dublin", country="Ireland",
-        latitude=53.3498, longitude=-6.2603,
+        latitude=53.3498, longitude=-6.2603, timezone="Europe/Dublin",
     ),
 ]
 
