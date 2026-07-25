@@ -1,7 +1,7 @@
 from datetime import datetime
 
 import requests
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from .manifest import ManifestItem, get_manifest
 from .models import Departure, Station, StationNotFound
@@ -14,26 +14,39 @@ router = APIRouter(tags=["interrail"])
 # Single source of truth for all live train/bus data (see transitous.py).
 TRANSITOUS = Transitous()
 
+# How long clients may reuse a response without asking again. This is the second
+# half of easing load on Transitous: the caches in transitous.py stop repeat
+# requests reaching upstream, and these stop them reaching us at all. Kept short
+# for departures, which change as delays come in.
+_MANIFEST_MAX_AGE = 300
+_STATIONS_MAX_AGE = 3600
+_DEPARTURES_MAX_AGE = 15
+
 
 @router.get("/manifest", response_model_exclude_none=True)
-def read_manifest() -> list[ManifestItem]:
+def read_manifest(response: Response) -> list[ManifestItem]:
     """Return the trip manifest: the ordered destinations and travel legs."""
+    response.headers["Cache-Control"] = f"public, max-age={_MANIFEST_MAX_AGE}"
     return get_manifest()
 
 
 @router.get("/stations")
-def search_stations(query: str, limit: int = 10) -> list[Station]:
+def search_stations(response: Response, query: str, limit: int = 10) -> list[Station]:
     """Resolve a free-text ``query`` to matching stations for autocomplete."""
     try:
-        return TRANSITOUS.search_stations(query, limit)
+        stations = TRANSITOUS.search_stations(query, limit)
     except requests.HTTPError as exc:
         raise HTTPException(
             status_code=502, detail="Upstream routing API error"
         ) from exc
 
+    response.headers["Cache-Control"] = f"public, max-age={_STATIONS_MAX_AGE}"
+    return stations
+
 
 @router.get("/departures")
 def get_departures(
+    response: Response,
     origin: str = Query(..., alias="from"),
     destination: str = Query(..., alias="to"),
     when: datetime | None = None,
@@ -70,4 +83,5 @@ def get_departures(
             status_code=502, detail="Upstream routing API error"
         ) from exc
 
+    response.headers["Cache-Control"] = f"public, max-age={_DEPARTURES_MAX_AGE}"
     return departures

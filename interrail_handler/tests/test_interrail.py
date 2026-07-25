@@ -99,8 +99,13 @@ class FakeResponse:
 class FakeSession:
     """Stand-in for requests.Session returning canned MOTIS responses."""
 
+    def __init__(self):
+        #: Every request made, so tests can assert what reached upstream.
+        self.calls = []
+
     def get(self, url, params=None, timeout=None):
         params = params or {}
+        self.calls.append((url, params))
         if url.endswith("/api/v1/geocode"):
             text = (params.get("text") or "").lower()
             if "boom" in text:  # simulate an upstream failure
@@ -114,13 +119,27 @@ class FakeSession:
 
 
 @pytest.fixture
-def client():
+def session():
+    """Swap the shared client's transport for a fake, with empty caches.
+
+    The app holds one long-lived Transitous, so its caches outlive a test unless
+    cleared — both before (so canned data isn't served from a previous test) and
+    after (so a cached fake response can't leak into a later one).
+    """
     original = TRANSITOUS.session
-    TRANSITOUS.session = FakeSession()
+    fake = FakeSession()
+    TRANSITOUS.session = fake
+    TRANSITOUS.clear_caches()
     try:
-        yield TestClient(app)
+        yield fake
     finally:
         TRANSITOUS.session = original
+        TRANSITOUS.clear_caches()
+
+
+@pytest.fixture
+def client(session):
+    return TestClient(app)
 
 
 # --- /stations ---------------------------------------------------------------
@@ -263,3 +282,68 @@ def test_manifest_flight_hands_off_to_leg(client):
     following = body[body.index(flight) + 1]
     assert following["type"] == "leg"
     assert following["from"] == flight["end"]
+
+
+# --- caching -----------------------------------------------------------------
+
+def _geocodes(session):
+    return [p.get("text") for url, p in session.calls if url.endswith("geocode")]
+
+
+def test_repeat_station_search_hits_upstream_once(client, session):
+    for _ in range(3):
+        client.get("/stations", params={"query": "Bern"})
+    assert _geocodes(session) == ["Bern"]
+
+
+def test_station_search_cache_ignores_case_and_padding(client, session):
+    client.get("/stations", params={"query": "Bern"})
+    client.get("/stations", params={"query": " bern "})
+    assert len(_geocodes(session)) == 1
+
+
+def test_station_search_caches_before_limit_is_applied(client, session):
+    # A wide autocomplete and a narrow one share the cached geocode; only the
+    # slice differs.
+    wide = client.get("/stations", params={"query": "Bern"}).json()
+    narrow = client.get("/stations", params={"query": "Bern", "limit": 1}).json()
+    assert len(_geocodes(session)) == 1
+    assert narrow == wide[:1]
+
+
+def test_departures_reuse_cached_station_lookups(client, session):
+    client.get("/departures", params={"from": "Bern", "to": "Spiez"})
+    first = len(_geocodes(session))
+    client.get("/departures", params={"from": "Bern", "to": "Spiez"})
+    # Both endpoints resolve once and stay resolved; the repeat adds nothing.
+    assert first == 2
+    assert len(_geocodes(session)) == 2
+
+
+def test_departures_are_cached_per_query(client, session):
+    def plans():
+        return [p for url, p in session.calls if url.endswith("plan")]
+
+    client.get("/departures", params={"from": "Bern", "to": "Spiez"})
+    client.get("/departures", params={"from": "Bern", "to": "Spiez"})
+    assert len(plans()) == 1
+    # A different leg is a different key, so it still reaches upstream.
+    client.get("/departures", params={"from": "Bern", "to": "Bern Wankdorf"})
+    assert len(plans()) == 2
+
+
+def test_upstream_failure_is_not_cached(client, session):
+    assert client.get("/stations", params={"query": "boom"}).status_code == 502
+    assert client.get("/stations", params={"query": "boom"}).status_code == 502
+    # Both attempts reached upstream: a failure must not be pinned for the TTL.
+    assert _geocodes(session) == ["boom", "boom"]
+
+
+def test_responses_carry_cache_control(client):
+    assert "max-age" in client.get("/manifest").headers["cache-control"]
+    assert "max-age" in client.get(
+        "/stations", params={"query": "Bern"}
+    ).headers["cache-control"]
+    assert "max-age" in client.get(
+        "/departures", params={"from": "Bern", "to": "Spiez"}
+    ).headers["cache-control"]

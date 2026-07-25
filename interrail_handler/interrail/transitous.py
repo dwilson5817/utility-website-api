@@ -2,12 +2,22 @@ from datetime import datetime
 
 import requests
 
+from .cache import TTLCache
 from .models import (
     Departure,
     Station,
     StationNotFound,
     StopPoint,
 )
+
+#: Station ids are effectively permanent, and geocoding is the call we make most
+#: (every departures lookup resolves two free-text names), so hold results for a
+#: long time — in practice the container dies long before this expires.
+GEOCODE_TTL = 24 * 60 * 60
+
+#: Departure boards carry real-time delays and cancellations, so they may only
+#: be reused briefly. Repeat views of the same leg within the window are free.
+PLAN_TTL = 30
 
 
 # MOTIS reports a granular mode per leg; we collapse it to a simple transport
@@ -54,6 +64,17 @@ class Transitous:
         # have no headers.
         if isinstance(self.session, requests.Session):
             self.session.headers["User-Agent"] = self.user_agent
+
+        # Caches are per-instance so tests (and any future second client) start
+        # empty; the app holds one long-lived instance, so in production these
+        # live for as long as the Lambda container does.
+        self._geocode_cache = TTLCache(ttl=GEOCODE_TTL, maxsize=256)
+        self._plan_cache = TTLCache(ttl=PLAN_TTL, maxsize=64)
+
+    def clear_caches(self) -> None:
+        """Forget everything cached from upstream."""
+        self._geocode_cache.clear()
+        self._plan_cache.clear()
 
     # -- helpers ---------------------------------------------------------------
 
@@ -128,23 +149,52 @@ class Transitous:
             ),
         )
 
+    def _plan(self, params: dict) -> list[dict]:
+        """Fetch itineraries for ``params``, cached for :data:`PLAN_TTL`.
+
+        Keyed on the full parameter set, so the rail-only and rail-plus-bus
+        attempts a single request can make are cached separately.
+        """
+
+        def fetch() -> list[dict]:
+            response = self.session.get(
+                f"{self.base_url}/api/v3/plan", params=params, timeout=20
+            )
+            response.raise_for_status()
+            return response.json().get("itineraries", [])
+
+        return self._plan_cache.get_or_call(tuple(sorted(params.items())), fetch)
+
     # -- public API ------------------------------------------------------------
+
+    def _geocode(self, query: str) -> list[Station]:
+        """Geocode ``query`` to stations, caching the full (unlimited) result.
+
+        Caching before the limit is applied means an autocomplete asking for ten
+        matches and :meth:`_resolve` asking for one share a single upstream call.
+        """
+
+        def fetch() -> list[Station]:
+            response = self.session.get(
+                f"{self.base_url}/api/v1/geocode",
+                params={"text": query},
+                timeout=10,
+            )
+            response.raise_for_status()
+            results = response.json()
+            return [
+                Station(id=r["id"], name=r["name"])
+                for r in results
+                if r.get("type") == "STOP" and r.get("id") and r.get("name")
+            ]
+
+        # Case and surrounding space don't change what the geocoder matches, so
+        # normalise them away to get more hits out of the same entry.
+        return self._geocode_cache.get_or_call(query.strip().casefold(), fetch)
 
     def search_stations(self, query: str, limit: int = 10) -> list[Station]:
         """Resolve free-text ``query`` to matching stations for autocomplete."""
-        response = self.session.get(
-            f"{self.base_url}/api/v1/geocode",
-            params={"text": query},
-            timeout=10,
-        )
-        response.raise_for_status()
-        results = response.json()
-        stations = [
-            Station(id=r["id"], name=r["name"])
-            for r in results
-            if r.get("type") == "STOP" and r.get("id") and r.get("name")
-        ]
-        return stations[:limit]
+        return self._geocode(query)[:limit]
 
     def departures(
         self,
@@ -177,11 +227,7 @@ class Transitous:
         if when is not None:
             params["time"] = when.isoformat()
 
-        response = self.session.get(
-            f"{self.base_url}/api/v3/plan", params=params, timeout=20
-        )
-        response.raise_for_status()
-        itineraries = response.json().get("itineraries", [])
+        itineraries = self._plan(params)
 
         departures: list[Departure] = []
         seen: set[str] = set()
