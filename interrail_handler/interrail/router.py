@@ -3,8 +3,9 @@ from datetime import datetime
 import requests
 from fastapi import APIRouter, HTTPException, Query, Response
 
-from .manifest import ManifestItem, get_manifest
-from .models import Departure, Station, StationNotFound
+from .manifest import DestinationItem, ManifestItem, get_manifest
+from .models import Departure, DestinationWeather, Station, StationNotFound
+from .openmeteo import OpenMeteo
 from .transitous import Transitous
 
 # No path prefix: the API layer maps /interrail to this function (main.py strips
@@ -13,6 +14,8 @@ router = APIRouter(tags=["interrail"])
 
 # Single source of truth for all live train/bus data (see transitous.py).
 TRANSITOUS = Transitous()
+# Weather for the destinations (see openmeteo.py).
+WEATHER = OpenMeteo()
 
 # How long clients may reuse a response without asking again. This is the second
 # half of easing load on Transitous: the caches in transitous.py stop repeat
@@ -21,6 +24,7 @@ TRANSITOUS = Transitous()
 _MANIFEST_MAX_AGE = 300
 _STATIONS_MAX_AGE = 3600
 _DEPARTURES_MAX_AGE = 15
+_WEATHER_MAX_AGE = 600
 
 
 @router.get("/manifest", response_model_exclude_none=True)
@@ -85,3 +89,31 @@ def get_departures(
 
     response.headers["Cache-Control"] = f"public, max-age={_DEPARTURES_MAX_AGE}"
     return departures
+
+
+@router.get("/weather")
+def get_weather(response: Response) -> list[DestinationWeather]:
+    """Current conditions and a short forecast for each trip destination.
+
+    The destinations (and their coordinates) come from the manifest, so this
+    takes no parameters. All destinations are fetched in one batched, cached
+    upstream call; the result is keyed by destination name for the frontend to
+    join onto the manifest.
+    """
+    # Distinct destinations in trip order (Dublin appears at both ends).
+    seen: set[str] = set()
+    locations: list[tuple[str, float, float]] = []
+    for item in get_manifest():
+        if isinstance(item, DestinationItem) and item.name not in seen:
+            seen.add(item.name)
+            locations.append((item.name, item.latitude, item.longitude))
+
+    try:
+        weather = WEATHER.forecast(locations)
+    except requests.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail="Upstream weather API error"
+        ) from exc
+
+    response.headers["Cache-Control"] = f"public, max-age={_WEATHER_MAX_AGE}"
+    return weather

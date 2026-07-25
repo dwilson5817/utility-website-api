@@ -5,12 +5,18 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class DestinationItem(BaseModel):
-    """A place stayed at on the trip (display only)."""
+    """A place stayed at on the trip.
+
+    Mostly display, but carries fixed coordinates so ``/weather`` can fetch the
+    forecast for each destination without a geocoding round-trip.
+    """
 
     type: Literal["destination"] = "destination"
     flag: str
     name: str
     country: str
+    latitude: float
+    longitude: float
 
 
 class FlightItem(BaseModel):
@@ -65,7 +71,10 @@ ManifestItem = Annotated[
 # legs. Station names are chosen to geocode cleanly against MOTIS; Därligen has
 # no train station, so it uses the bus stop "Därligen, Dorf".
 _MANIFEST: list[ManifestItem] = [
-    DestinationItem(flag="🇮🇪", name="Dublin", country="Ireland"),
+    DestinationItem(
+        flag="🇮🇪", name="Dublin", country="Ireland",
+        latitude=53.3498, longitude=-6.2603,
+    ),
     FlightItem(
         start="Dublin", end="Genève-Aéroport",
         number="EI 0680", operator="Aer Lingus",
@@ -74,22 +83,37 @@ _MANIFEST: list[ManifestItem] = [
     LegItem(from_="Genève-Aéroport", to="Bern"),
     LegItem(from_="Bern", to="Spiez"),
     LegItem(mode="bus", from_="Spiez, Bahnhof", to="Därligen, Dorf"),
-    DestinationItem(flag="🇨🇭", name="Därligen", country="Switzerland"),
+    DestinationItem(
+        flag="🇨🇭", name="Därligen", country="Switzerland",
+        latitude=46.6635, longitude=7.8497,
+    ),
     LegItem(mode="bus", from_="Därligen, Dorf", to="Spiez, Bahnhof"),
     LegItem(from_="Spiez", to="Bern"),
     LegItem(from_="Bern", to="Zürich HB"),
     LegItem(from_="Zürich HB", to="München Hbf"),
-    DestinationItem(flag="🇩🇪", name="Munich", country="Germany"),
+    DestinationItem(
+        flag="🇩🇪", name="Munich", country="Germany",
+        latitude=48.1374, longitude=11.5755,
+    ),
     LegItem(from_="München Hbf", to="Praha hlavní nádraží"),
-    DestinationItem(flag="🇨🇿", name="Prague", country="Czech Republic"),
+    DestinationItem(
+        flag="🇨🇿", name="Prague", country="Czech Republic",
+        latitude=50.0755, longitude=14.4378,
+    ),
     LegItem(from_="Praha hlavní nádraží", to="Berlin Hbf"),
-    DestinationItem(flag="🇩🇪", name="Berlin", country="Germany"),
+    DestinationItem(
+        flag="🇩🇪", name="Berlin", country="Germany",
+        latitude=52.5200, longitude=13.4050,
+    ),
     FlightItem(
         start="Berlin", end="Dublin",
         number="EI 0337", operator="Aer Lingus",
         departure_at="2026-08-08T20:45:00Z",
     ),
-    DestinationItem(flag="🇮🇪", name="Dublin", country="Ireland"),
+    DestinationItem(
+        flag="🇮🇪", name="Dublin", country="Ireland",
+        latitude=53.3498, longitude=-6.2603,
+    ),
 ]
 
 

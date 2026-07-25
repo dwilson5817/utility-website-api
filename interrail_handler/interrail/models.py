@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel
 
@@ -54,3 +54,49 @@ class Departure(BaseModel):
     departure: StopPoint
     #: Where it drops you (the hop's next stop).
     arrival: StopPoint
+
+
+class CurrentWeather(BaseModel):
+    """Current conditions at a destination, passed through from Open-Meteo.
+
+    ``weather_code`` is the raw WMO code; the frontend maps it to an icon/label
+    (we don't translate it). Units are fixed by the request: °C, km/h.
+    """
+
+    #: Local observation time at the destination.
+    time: datetime
+    #: Air temperature, °C.
+    temperature: float
+    #: WMO weather-interpretation code.
+    weather_code: int
+    #: Wind speed, km/h.
+    wind_speed: float
+
+
+class DailyForecast(BaseModel):
+    """One day of forecast at a destination. Units: °C, %."""
+
+    date: date
+    #: WMO weather-interpretation code for the day.
+    weather_code: int
+    #: Forecast low, °C.
+    temperature_min: float
+    #: Forecast high, °C.
+    temperature_max: float
+    #: Chance of precipitation, %, when reported.
+    precipitation_probability: int | None = None
+
+
+class DestinationWeather(BaseModel):
+    """Weather for one trip destination: current conditions + short forecast.
+
+    ``destination`` matches the ``name`` of the manifest ``DestinationItem`` so
+    the frontend can join it onto the destinations it already has.
+    """
+
+    destination: str
+    latitude: float
+    longitude: float
+    timezone: str
+    current: CurrentWeather
+    daily: list[DailyForecast]

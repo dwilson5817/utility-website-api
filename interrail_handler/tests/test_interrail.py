@@ -3,7 +3,7 @@ import requests
 from fastapi.testclient import TestClient
 
 from interrail import app
-from interrail.router import TRANSITOUS
+from interrail.router import TRANSITOUS, WEATHER
 
 # --- Canned upstream (Transitous / MOTIS 2) payloads -------------------------
 
@@ -83,6 +83,37 @@ PLAN_ITINERARIES = [
 ]
 
 
+# --- Canned upstream (Open-Meteo) payload ------------------------------------
+
+# One block per distinct destination, in trip order: Dublin, Därligen, Munich,
+# Prague, Berlin. Open-Meteo returns a JSON *array* for a multi-location request
+# and each block is column-per-variable (dates parallel to the value lists).
+def _weather_block(*, lat, lon, tz, temp, code, wind):
+    return {
+        "latitude": lat, "longitude": lon, "timezone": tz,
+        "current": {
+            "time": "2026-07-25T14:00", "temperature_2m": temp,
+            "weather_code": code, "wind_speed_10m": wind,
+        },
+        "daily": {
+            "time": ["2026-07-25", "2026-07-26", "2026-07-27"],
+            "weather_code": [code, 61, 80],
+            "temperature_2m_max": [temp + 2, temp + 1, temp + 3],
+            "temperature_2m_min": [temp - 6, temp - 5, temp - 4],
+            "precipitation_probability_max": [20, 70, 55],
+        },
+    }
+
+
+WEATHER_FORECAST = [
+    _weather_block(lat=53.35, lon=-6.26, tz="Europe/Dublin", temp=17.3, code=3, wind=12.5),
+    _weather_block(lat=46.66, lon=7.85, tz="Europe/Zurich", temp=21.0, code=1, wind=6.0),
+    _weather_block(lat=48.14, lon=11.58, tz="Europe/Berlin", temp=24.4, code=2, wind=8.1),
+    _weather_block(lat=50.08, lon=14.44, tz="Europe/Prague", temp=23.1, code=0, wind=9.3),
+    _weather_block(lat=52.52, lon=13.40, tz="Europe/Berlin", temp=25.0, code=95, wind=14.7),
+]
+
+
 class FakeResponse:
     def __init__(self, payload, status=200):
         self._payload = payload
@@ -115,6 +146,8 @@ class FakeSession:
             return FakeResponse(GEOCODE_STOPS)
         if url.endswith("/api/v3/plan"):
             return FakeResponse({"itineraries": PLAN_ITINERARIES})
+        if url.endswith("/v1/forecast"):
+            return FakeResponse(WEATHER_FORECAST)
         raise AssertionError(f"unexpected URL: {url}")
 
 
@@ -135,6 +168,23 @@ def session():
     finally:
         TRANSITOUS.session = original
         TRANSITOUS.clear_caches()
+
+
+@pytest.fixture
+def weather():
+    """Swap the shared weather client's transport for a fake, caches cleared.
+
+    Mirrors the ``session`` fixture but for the separate Open-Meteo client.
+    """
+    original = WEATHER.session
+    fake = FakeSession()
+    WEATHER.session = fake
+    WEATHER.clear_caches()
+    try:
+        yield fake
+    finally:
+        WEATHER.session = original
+        WEATHER.clear_caches()
 
 
 @pytest.fixture
@@ -248,6 +298,7 @@ def test_manifest_destination_is_display_only(client):
     )
     assert munich == {
         "type": "destination", "flag": "🇩🇪", "name": "Munich", "country": "Germany",
+        "latitude": 48.1374, "longitude": 11.5755,
     }
 
 
@@ -282,6 +333,65 @@ def test_manifest_flight_hands_off_to_leg(client):
     following = body[body.index(flight) + 1]
     assert following["type"] == "leg"
     assert following["from"] == flight["end"]
+
+
+# --- /weather ----------------------------------------------------------------
+
+def _forecasts(session):
+    return [(url, p) for url, p in session.calls if url.endswith("/v1/forecast")]
+
+
+def test_weather_covers_distinct_destinations_in_order(client, weather):
+    body = client.get("/weather").json()
+    # Dublin is a destination at both ends of the trip but weather lists it once.
+    assert [w["destination"] for w in body] == [
+        "Dublin", "Därligen", "Munich", "Prague", "Berlin",
+    ]
+
+
+def test_weather_current_and_daily_passthrough(client, weather):
+    body = client.get("/weather").json()
+    dublin = body[0]
+    assert dublin["timezone"] == "Europe/Dublin"
+    assert dublin["current"]["temperature"] == 17.3
+    assert dublin["current"]["weather_code"] == 3  # raw WMO code, not translated
+    assert dublin["current"]["wind_speed"] == 12.5
+    # Three days of forecast, dates and codes passed straight through.
+    assert len(dublin["daily"]) == 3
+    assert dublin["daily"][0]["date"] == "2026-07-25"
+    assert dublin["daily"][1]["precipitation_probability"] == 70
+
+
+def test_weather_is_one_batched_upstream_call(client, weather):
+    client.get("/weather")
+    calls = _forecasts(weather)
+    # All five destinations arrive in a single request...
+    assert len(calls) == 1
+    _, params = calls[0]
+    assert len(params["latitude"].split(",")) == 5
+    assert len(params["longitude"].split(",")) == 5
+
+
+def test_weather_is_cached(client, weather):
+    client.get("/weather")
+    client.get("/weather")
+    # The second view is served from cache — upstream is hit once.
+    assert len(_forecasts(weather)) == 1
+
+
+def test_weather_upstream_error_is_502(client):
+    class Boom:
+        def get(self, *args, **kwargs):
+            return FakeResponse(None, status=500)
+
+    original = WEATHER.session
+    WEATHER.session = Boom()
+    WEATHER.clear_caches()
+    try:
+        assert client.get("/weather").status_code == 502
+    finally:
+        WEATHER.session = original
+        WEATHER.clear_caches()
 
 
 # --- caching -----------------------------------------------------------------
@@ -327,8 +437,10 @@ def test_departures_are_cached_per_query(client, session):
     client.get("/departures", params={"from": "Bern", "to": "Spiez"})
     client.get("/departures", params={"from": "Bern", "to": "Spiez"})
     assert len(plans()) == 1
-    # A different leg is a different key, so it still reaches upstream.
-    client.get("/departures", params={"from": "Bern", "to": "Bern Wankdorf"})
+    # A different leg is a different key, so it still reaches upstream. Use a
+    # distinct station id (passed straight through) — free-text names all geocode
+    # to the same first stub stop, which would collapse onto the cached key.
+    client.get("/departures", params={"from": "Bern", "to": "ch:1:sloid:7100"})
     assert len(plans()) == 2
 
 
@@ -339,7 +451,7 @@ def test_upstream_failure_is_not_cached(client, session):
     assert _geocodes(session) == ["boom", "boom"]
 
 
-def test_responses_carry_cache_control(client):
+def test_responses_carry_cache_control(client, weather):
     assert "max-age" in client.get("/manifest").headers["cache-control"]
     assert "max-age" in client.get(
         "/stations", params={"query": "Bern"}
@@ -347,3 +459,4 @@ def test_responses_carry_cache_control(client):
     assert "max-age" in client.get(
         "/departures", params={"from": "Bern", "to": "Spiez"}
     ).headers["cache-control"]
+    assert "max-age" in client.get("/weather").headers["cache-control"]
