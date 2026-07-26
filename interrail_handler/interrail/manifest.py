@@ -104,7 +104,14 @@ _MANIFEST: list[ManifestItem] = [
         latitude=48.1374, longitude=11.5755, timezone="Europe/Berlin",
         depart="2026-08-03",
     ),
-    LegItem(from_="München Hbf", to="Praha hlavní nádraží"),
+    # Direct München->Praha trains are sparse, so route via Nürnberg and the
+    # Schwandorf–Furth im Wald corridor, which has far more frequent options.
+    # MOTIS models the cross-border "alex" (RE25) as two legs split at Furth im
+    # Wald (last German stop), so that's a leg boundary here too.
+    LegItem(from_="München Hbf", to="Nürnberg Hbf"),
+    LegItem(from_="Nürnberg Hbf", to="Schwandorf"),
+    LegItem(from_="Schwandorf", to="Furth im Wald"),
+    LegItem(from_="Furth im Wald", to="Praha hlavní nádraží"),
     DestinationItem(
         flag="🇨🇿", name="Prague", country="Czech Republic",
         latitude=50.0755, longitude=14.4378, timezone="Europe/Prague",
