@@ -326,10 +326,27 @@ def test_manifest_destination_depart_dates(client):
 def test_manifest_flight_is_static_with_details(client):
     body = client.get("/manifest").json()
     flight = next(i for i in body if i["type"] == "flight")
+    # Static flight details, incl. timezone-aware local departure/arrival times
+    # each paired with the airport's IANA zone for local-time display.
     assert flight == {
         "type": "flight", "start": "Dublin", "end": "Genève-Aéroport",
         "number": "EI 0680", "operator": "Aer Lingus",
+        "departure_at": "2026-07-29T06:15:00+01:00", "departure_timezone": "Europe/Dublin",
+        "arrival_at": "2026-07-29T09:30:00+02:00", "arrival_timezone": "Europe/Zurich",
     }
+
+
+def test_manifest_return_flight_times(client):
+    body = client.get("/manifest").json()
+    ret = next(
+        i for i in body if i["type"] == "flight" and i["number"] == "EI 0337"
+    )
+    # Departs Berlin 21:45 local (CEST, +02:00) and lands Dublin 23:10 local
+    # (IST, +01:00) — a 2h25m hop that stays on the same day.
+    assert ret["departure_at"] == "2026-08-08T21:45:00+02:00"
+    assert ret["departure_timezone"] == "Europe/Berlin"
+    assert ret["arrival_at"] == "2026-08-08T23:10:00+01:00"
+    assert ret["arrival_timezone"] == "Europe/Dublin"
 
 
 def test_manifest_leg_names_stations_and_mode(client):

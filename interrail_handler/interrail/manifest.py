@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -29,10 +29,11 @@ class DestinationItem(BaseModel):
 class FlightItem(BaseModel):
     """A flight between two places.
 
-    Flights are static markers: they aren't in the routing engine and aren't
-    covered by the Interrail pass, so — unlike ``leg`` hops — they can't be shown
-    as a live departure board. The ``end`` airport is where the following ``leg``
-    begins.
+    Flights are static: they aren't in the routing engine and aren't covered by
+    the Interrail pass, so — unlike ``leg`` hops — they can't be shown as a live
+    departure board. Instead they carry fixed scheduled departure and arrival
+    times (timezone-aware local, each with the airport's IANA zone for display).
+    The ``end`` airport is where the following ``leg`` begins.
     """
 
     type: Literal["flight"] = "flight"
@@ -40,6 +41,13 @@ class FlightItem(BaseModel):
     end: str
     number: str
     operator: str
+    #: Scheduled departure/arrival as timezone-aware local times (each carries
+    #: its UTC offset, e.g. ``"2026-07-29T06:15:00+01:00"``), paired with the
+    #: departure/arrival airport's IANA timezone for local-time display.
+    departure_at: datetime
+    departure_timezone: str
+    arrival_at: datetime
+    arrival_timezone: str
 
 
 class LegItem(BaseModel):
@@ -86,6 +94,8 @@ _MANIFEST: list[ManifestItem] = [
     FlightItem(
         start="Dublin", end="Genève-Aéroport",
         number="EI 0680", operator="Aer Lingus",
+        departure_at="2026-07-29T06:15:00+01:00", departure_timezone="Europe/Dublin",
+        arrival_at="2026-07-29T09:30:00+02:00", arrival_timezone="Europe/Zurich",
     ),
     LegItem(from_="Genève-Aéroport", to="Bern"),
     LegItem(from_="Bern", to="Spiez"),
@@ -126,6 +136,8 @@ _MANIFEST: list[ManifestItem] = [
     FlightItem(
         start="Berlin", end="Dublin",
         number="EI 0337", operator="Aer Lingus",
+        departure_at="2026-08-08T21:45:00+02:00", departure_timezone="Europe/Berlin",
+        arrival_at="2026-08-08T23:10:00+01:00", arrival_timezone="Europe/Dublin",
     ),
     DestinationItem(
         flag="🇮🇪", name="Dublin", country="Ireland",
