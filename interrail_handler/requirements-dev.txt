@@ -1,0 +1,7 @@
+# Installs the production deps too so one command sets up everything:
+#     pip install -r requirements-dev.txt
+-r requirements.txt
+
+uvicorn~=0.47.0  # local dev server: uvicorn interrail:app --app-dir interrail_handler --reload
+httpx~=0.28.1    # transport for FastAPI's TestClient (tests only)
+pytest~=9.1.1
